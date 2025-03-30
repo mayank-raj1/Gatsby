@@ -1,5 +1,6 @@
-
-import React, { createContext, useState, useContext, useEffect } from 'react';
+// src/hooks/useFinanceData.tsx
+import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+import { transactionsApi, budgetsApi, savingsGoalsApi, summaryApi } from '@/services/api';
 
 // Define types for our financial data
 export type TransactionType = 'income' | 'expense';
@@ -8,6 +9,8 @@ export interface Transaction {
   id: string;
   amount: number;
   description: string;
+  comments: string;
+  tags: string[];
   category: string;
   type: TransactionType;
   date: string;
@@ -28,278 +31,236 @@ export interface SavingsGoal {
   deadline?: string;
 }
 
-interface FinanceData {
-  transactions: Transaction[];
-  budgets: Budget[];
-  savingsGoals: SavingsGoal[];
-}
-
 interface FinanceContextValue {
   transactions: Transaction[];
   budgets: Budget[];
   savingsGoals: SavingsGoal[];
-  addTransaction: (transaction: Omit<Transaction, 'id'>) => void;
-  addBudget: (budget: Omit<Budget, 'id' | 'spent'>) => void;
-  updateBudget: (id: string, data: Partial<Budget>) => void;
-  addSavingsGoal: (goal: Omit<SavingsGoal, 'id' | 'currentAmount'>) => void;
-  updateSavingsGoal: (id: string, data: Partial<SavingsGoal>) => void;
-  deleteTransaction: (id: string) => void;
-  deleteBudget: (id: string) => void;
-  deleteSavingsGoal: (id: string) => void;
+  loading: boolean;
+  error: string | null;
+  addTransaction: (transaction: Omit<Transaction, 'id'>) => Promise<void>;
+  addBudget: (budget: Omit<Budget, 'id' | 'spent'>) => Promise<void>;
+  updateBudget: (id: string, data: Partial<Budget>) => Promise<void>;
+  addSavingsGoal: (goal: Omit<SavingsGoal, 'id' | 'currentAmount'>) => Promise<void>;
+  updateSavingsGoal: (id: string, data: Partial<SavingsGoal>) => Promise<void>;
+  deleteTransaction: (id: string) => Promise<void>;
+  deleteBudget: (id: string) => Promise<void>;
+  deleteSavingsGoal: (id: string) => Promise<void>;
   totalIncome: number;
   totalExpenses: number;
   totalSavings: number;
   availableBalance: number;
+  refreshData: () => Promise<void>;
 }
 
 // Create a context for our finance data
 const FinanceContext = createContext<FinanceContextValue | undefined>(undefined);
 
-// Initialize with sample data
-const initialData: FinanceData = {
-  transactions: [
-    {
-      id: '1',
-      amount: 1500,
-      description: 'Internship Stipend',
-      category: 'Salary',
-      type: 'income',
-      date: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: '2',
-      amount: 25,
-      description: 'Coffee shop',
-      category: 'Food & Drinks',
-      type: 'expense',
-      date: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: '3',
-      amount: 50,
-      description: 'Textbooks',
-      category: 'Education',
-      type: 'expense',
-      date: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: '4',
-      amount: 200,
-      description: 'Freelance project',
-      category: 'Side Hustle',
-      type: 'income',
-      date: new Date().toISOString(),
-    },
-  ],
-  budgets: [
-    { id: '1', category: 'Food & Drinks', amount: 300, spent: 150 },
-    { id: '2', category: 'Transportation', amount: 200, spent: 80 },
-    { id: '3', category: 'Entertainment', amount: 100, spent: 35 },
-    { id: '4', category: 'Education', amount: 150, spent: 50 },
-  ],
-  savingsGoals: [
-    {
-      id: '1',
-      name: 'Emergency Fund',
-      targetAmount: 1000,
-      currentAmount: 500,
-      deadline: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: '2',
-      name: 'New Laptop',
-      targetAmount: 1200,
-      currentAmount: 300,
-      deadline: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-  ],
-};
-
 // Provider component
 export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Initialize state from localStorage or use initial data
-  const [data, setData] = useState<FinanceData>(() => {
-    const savedData = localStorage.getItem('financeData');
-    return savedData ? JSON.parse(savedData) : initialData;
-  });
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Save to localStorage whenever data changes
+  // Financial summary
+  const [totalIncome, setTotalIncome] = useState(0);
+  const [totalExpenses, setTotalExpenses] = useState(0);
+  const [totalSavings, setTotalSavings] = useState(0);
+  const [availableBalance, setAvailableBalance] = useState(0);
+
+  // Fetch all data from API
+  const fetchAllData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [transactionData, budgetData, savingsData, summaryData] = await Promise.all([
+        transactionsApi.getAll(),
+        budgetsApi.getAll(),
+        savingsGoalsApi.getAll(),
+        summaryApi.get()
+      ]);
+
+      setTransactions(transactionData);
+      setBudgets(budgetData);
+      setSavingsGoals(savingsData);
+
+      // Set financial summary
+      setTotalIncome(summaryData.totalIncome);
+      setTotalExpenses(summaryData.totalExpenses);
+      setTotalSavings(summaryData.totalSavings);
+      setAvailableBalance(summaryData.availableBalance);
+    } catch (err) {
+      console.error('Error fetching finance data:', err);
+      setError('Failed to load financial data');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Initial data load
   useEffect(() => {
-    localStorage.setItem('financeData', JSON.stringify(data));
-  }, [data]);
+    fetchAllData();
+  }, [fetchAllData]);
 
-  // Calculate totals
-  const totalIncome = data.transactions
-    .filter(t => t.type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0);
+  // CRUD functions for transactions
+  const addTransaction = async (transaction: Omit<Transaction, 'id'>) => {
+    try {
+      const newTransaction = await transactionsApi.create(transaction);
+      setTransactions(prev => [newTransaction, ...prev]);
 
-  const totalExpenses = data.transactions
-    .filter(t => t.type === 'expense')
-    .reduce((sum, t) => sum + t.amount, 0);
+      // Refresh budgets and summary since they might have changed
+      const [budgetData, summaryData] = await Promise.all([
+        budgetsApi.getAll(),
+        summaryApi.get()
+      ]);
 
-  const totalSavings = data.savingsGoals.reduce((sum, goal) => sum + goal.currentAmount, 0);
-
-  const availableBalance = totalIncome - totalExpenses - totalSavings;
-
-  // CRUD functions
-  const addTransaction = (transaction: Omit<Transaction, 'id'>) => {
-    const newTransaction = {
-      ...transaction,
-      id: Date.now().toString(),
-    };
-    
-    // Update budget spent amount if it's an expense
-    if (transaction.type === 'expense') {
-      const updatedBudgets = data.budgets.map(budget => {
-        if (budget.category === transaction.category) {
-          return { ...budget, spent: budget.spent + transaction.amount };
-        }
-        return budget;
-      });
-      
-      setData(prev => ({
-        ...prev,
-        transactions: [newTransaction, ...prev.transactions],
-        budgets: updatedBudgets,
-      }));
-    } else {
-      setData(prev => ({
-        ...prev,
-        transactions: [newTransaction, ...prev.transactions],
-      }));
+      setBudgets(budgetData);
+      setTotalIncome(summaryData.totalIncome);
+      setTotalExpenses(summaryData.totalExpenses);
+      setAvailableBalance(summaryData.availableBalance);
+    } catch (err) {
+      console.error('Error adding transaction:', err);
+      setError('Failed to add transaction');
     }
   };
 
-  const deleteTransaction = (id: string) => {
-    const transaction = data.transactions.find(t => t.id === id);
-    if (!transaction) return;
+  const deleteTransaction = async (id: string) => {
+    try {
+      await transactionsApi.delete(id);
+      setTransactions(prev => prev.filter(t => t.id !== id));
 
-    // If it's an expense, update the budget spent amount
-    if (transaction.type === 'expense') {
-      const updatedBudgets = data.budgets.map(budget => {
-        if (budget.category === transaction.category) {
-          return { 
-            ...budget, 
-            spent: Math.max(0, budget.spent - transaction.amount)
-          };
-        }
-        return budget;
-      });
-      
-      setData(prev => ({
-        ...prev,
-        transactions: prev.transactions.filter(t => t.id !== id),
-        budgets: updatedBudgets,
-      }));
-    } else {
-      setData(prev => ({
-        ...prev,
-        transactions: prev.transactions.filter(t => t.id !== id),
-      }));
+      // Refresh budgets and summary
+      const [budgetData, summaryData] = await Promise.all([
+        budgetsApi.getAll(),
+        summaryApi.get()
+      ]);
+
+      setBudgets(budgetData);
+      setTotalIncome(summaryData.totalIncome);
+      setTotalExpenses(summaryData.totalExpenses);
+      setAvailableBalance(summaryData.availableBalance);
+    } catch (err) {
+      console.error('Error deleting transaction:', err);
+      setError('Failed to delete transaction');
     }
   };
 
-  const addBudget = (budget: Omit<Budget, 'id' | 'spent'>) => {
-    const newBudget = {
-      ...budget,
-      id: Date.now().toString(),
-      spent: 0,
-    };
-    setData(prev => ({
-      ...prev,
-      budgets: [...prev.budgets, newBudget],
-    }));
+  // CRUD functions for budgets
+  const addBudget = async (budget: Omit<Budget, 'id' | 'spent'>) => {
+    try {
+      const newBudget = await budgetsApi.create(budget);
+      setBudgets(prev => [...prev, newBudget]);
+    } catch (err) {
+      console.error('Error adding budget:', err);
+      setError('Failed to add budget');
+    }
   };
 
-  const updateBudget = (id: string, budgetData: Partial<Budget>) => {
-    setData(prev => ({
-      ...prev,
-      budgets: prev.budgets.map(budget => 
-        budget.id === id ? { ...budget, ...budgetData } : budget
-      ),
-    }));
+  const updateBudget = async (id: string, budgetData: Partial<Budget>) => {
+    try {
+      const updatedBudget = await budgetsApi.update(id, budgetData);
+      setBudgets(prev => prev.map(budget =>
+          budget.id === id ? updatedBudget : budget
+      ));
+    } catch (err) {
+      console.error('Error updating budget:', err);
+      setError('Failed to update budget');
+    }
   };
 
-  const deleteBudget = (id: string) => {
-    setData(prev => ({
-      ...prev,
-      budgets: prev.budgets.filter(b => b.id !== id),
-    }));
+  const deleteBudget = async (id: string) => {
+    try {
+      await budgetsApi.delete(id);
+      setBudgets(prev => prev.filter(b => b.id !== id));
+    } catch (err) {
+      console.error('Error deleting budget:', err);
+      setError('Failed to delete budget');
+    }
   };
 
-  const addSavingsGoal = (goal: Omit<SavingsGoal, 'id' | 'currentAmount'>) => {
-    const newGoal = {
-      ...goal,
-      id: Date.now().toString(),
-      currentAmount: 0,
-    };
-    setData(prev => ({
-      ...prev,
-      savingsGoals: [...prev.savingsGoals, newGoal],
-    }));
+  // CRUD functions for savings goals
+  const addSavingsGoal = async (goal: Omit<SavingsGoal, 'id' | 'currentAmount'>) => {
+    try {
+      const newGoal = await savingsGoalsApi.create(goal);
+      setSavingsGoals(prev => [...prev, newGoal]);
+    } catch (err) {
+      console.error('Error adding savings goal:', err);
+      setError('Failed to add savings goal');
+    }
   };
 
-  const updateSavingsGoal = (id: string, goalData: Partial<SavingsGoal>) => {
-    setData(prev => ({
-      ...prev,
-      savingsGoals: prev.savingsGoals.map(goal => 
-        goal.id === id ? { ...goal, ...goalData } : goal
-      ),
-    }));
-  };
+  const updateSavingsGoal = async (id: string, goalData: Partial<SavingsGoal>) => {
+    try {
+      const updatedGoal = await savingsGoalsApi.update(id, goalData);
+      setSavingsGoals(prev => prev.map(goal =>
+          goal.id === id ? updatedGoal : goal
+      ));
 
-  const deleteSavingsGoal = (id: string) => {
-    // Get the amount saved in this goal to add back to available balance
-    const goalToDelete = data.savingsGoals.find(g => g.id === id);
-    
-    if (goalToDelete) {
-      // Create a "transfer back" transaction if there was money in the goal
-      if (goalToDelete.currentAmount > 0) {
-        const transferTransaction = {
-          id: Date.now().toString(),
-          amount: goalToDelete.currentAmount,
-          description: `Transferred from ${goalToDelete.name} savings goal`,
-          category: 'Savings Transfer',
-          type: 'income' as TransactionType,
-          date: new Date().toISOString(),
-        };
-        
-        setData(prev => ({
-          ...prev,
-          savingsGoals: prev.savingsGoals.filter(g => g.id !== id),
-          transactions: [transferTransaction, ...prev.transactions],
-        }));
-      } else {
-        setData(prev => ({
-          ...prev,
-          savingsGoals: prev.savingsGoals.filter(g => g.id !== id),
-        }));
+      // If we're contributing to a savings goal, we need to refresh transactions and summary
+      if (goalData.currentAmount) {
+        const [transactionData, summaryData] = await Promise.all([
+          transactionsApi.getAll(),
+          summaryApi.get()
+        ]);
+
+        setTransactions(transactionData);
+        setTotalExpenses(summaryData.totalExpenses);
+        setTotalSavings(summaryData.totalSavings);
+        setAvailableBalance(summaryData.availableBalance);
       }
+    } catch (err) {
+      console.error('Error updating savings goal:', err);
+      setError('Failed to update savings goal');
+    }
+  };
+
+  const deleteSavingsGoal = async (id: string) => {
+    try {
+      await savingsGoalsApi.delete(id);
+      setSavingsGoals(prev => prev.filter(g => g.id !== id));
+
+      // Refresh transactions and summary since a transfer transaction might have been created
+      const [transactionData, summaryData] = await Promise.all([
+        transactionsApi.getAll(),
+        summaryApi.get()
+      ]);
+
+      setTransactions(transactionData);
+      setTotalIncome(summaryData.totalIncome);
+      setTotalSavings(summaryData.totalSavings);
+      setAvailableBalance(summaryData.availableBalance);
+    } catch (err) {
+      console.error('Error deleting savings goal:', err);
+      setError('Failed to delete savings goal');
     }
   };
 
   return (
-    <FinanceContext.Provider
-      value={{
-        transactions: data.transactions,
-        budgets: data.budgets,
-        savingsGoals: data.savingsGoals,
-        addTransaction,
-        addBudget,
-        updateBudget,
-        addSavingsGoal,
-        updateSavingsGoal,
-        deleteTransaction,
-        deleteBudget,
-        deleteSavingsGoal,
-        totalIncome,
-        totalExpenses,
-        totalSavings,
-        availableBalance,
-      }}
-    >
-      {children}
-    </FinanceContext.Provider>
+      <FinanceContext.Provider
+          value={{
+            transactions,
+            budgets,
+            savingsGoals,
+            loading,
+            error,
+            addTransaction,
+            addBudget,
+            updateBudget,
+            addSavingsGoal,
+            updateSavingsGoal,
+            deleteTransaction,
+            deleteBudget,
+            deleteSavingsGoal,
+            totalIncome,
+            totalExpenses,
+            totalSavings,
+            availableBalance,
+            refreshData: fetchAllData,
+          }}
+      >
+        {children}
+      </FinanceContext.Provider>
   );
 };
 
