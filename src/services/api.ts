@@ -72,6 +72,11 @@ export const budgetsApi = {
         return handleResponse(response);
     },
 
+    getByPeriod: async (year: number, month: number): Promise<Budget[]> => {
+        const response = await fetch(`${API_URL}/budgets/period/${year}/${month}`);
+        return handleResponse(response);
+    },
+
     create: async (data: Omit<Budget, 'id' | 'spent'>): Promise<Budget> => {
         const response = await fetch(`${API_URL}/budgets`, {
             method: 'POST',
@@ -97,6 +102,13 @@ export const budgetsApi = {
     delete: async (id: string): Promise<void> => {
         const response = await fetch(`${API_URL}/budgets/${id}`, {
             method: 'DELETE',
+        });
+        return handleResponse(response);
+    },
+
+    createNextMonth: async (): Promise<{message: string; budgets: Budget[]}> => {
+        const response = await fetch(`${API_URL}/budgets/create-next-month`, {
+            method: 'POST',
         });
         return handleResponse(response);
     },

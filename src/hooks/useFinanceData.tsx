@@ -1,6 +1,11 @@
 // src/hooks/useFinanceData.tsx
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
-import { transactionsApi, budgetsApi, savingsGoalsApi, summaryApi } from '@/services/api';
+import {
+  transactionsApi,
+  budgetsApi,
+  savingsGoalsApi,
+  summaryApi
+} from '@/services/api';
 
 // Define types for our financial data
 export type TransactionType = 'income' | 'expense';
@@ -21,6 +26,10 @@ export interface Budget {
   category: string;
   amount: number;
   spent: number;
+  month: number;
+  year: number;
+  recurring: boolean;
+  period: string; // Formatted as "YYYY-MM"
 }
 
 export interface SavingsGoal {
@@ -31,14 +40,22 @@ export interface SavingsGoal {
   deadline?: string;
 }
 
+// Define response type for next month budgets
+interface NextMonthBudgetsResponse {
+  message: string;
+  budgets: Budget[];
+}
+
 interface FinanceContextValue {
   transactions: Transaction[];
   budgets: Budget[];
   savingsGoals: SavingsGoal[];
   loading: boolean;
   error: string | null;
+  currentBudgetPeriod: { month: number; year: number };
+  setCurrentBudgetPeriod: (period: { month: number; year: number }) => void;
   addTransaction: (transaction: Omit<Transaction, 'id'>) => Promise<void>;
-  addBudget: (budget: Omit<Budget, 'id' | 'spent'>) => Promise<void>;
+  addBudget: (budget: Omit<Budget, 'id' | 'spent' | 'period'>) => Promise<void>;
   updateBudget: (id: string, data: Partial<Budget>) => Promise<void>;
   addSavingsGoal: (goal: Omit<SavingsGoal, 'id' | 'currentAmount'>) => Promise<void>;
   updateSavingsGoal: (id: string, data: Partial<SavingsGoal>) => Promise<void>;
@@ -50,6 +67,7 @@ interface FinanceContextValue {
   totalSavings: number;
   availableBalance: number;
   refreshData: () => Promise<void>;
+  createNextMonthBudgets: () => Promise<NextMonthBudgetsResponse>;
 }
 
 // Create a context for our finance data
@@ -63,11 +81,24 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Current budget period (month/year)
+  const [currentBudgetPeriod, setCurrentBudgetPeriod] = useState<{ month: number; year: number }>(() => {
+    const now = new Date();
+    return { month: now.getMonth() + 1, year: now.getFullYear() };
+  });
+
   // Financial summary
   const [totalIncome, setTotalIncome] = useState(0);
   const [totalExpenses, setTotalExpenses] = useState(0);
   const [totalSavings, setTotalSavings] = useState(0);
   const [availableBalance, setAvailableBalance] = useState(0);
+
+  // Helper function to handle API errors
+  const handleApiError = (err: unknown, message: string) => {
+    console.error(`${message}:`, err);
+    setError(`Failed to ${message.toLowerCase()}`);
+    setLoading(false);
+  };
 
   // Fetch all data from API
   const fetchAllData = useCallback(async () => {
@@ -76,7 +107,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     try {
       const [transactionData, budgetData, savingsData, summaryData] = await Promise.all([
         transactionsApi.getAll(),
-        budgetsApi.getAll(),
+        budgetsApi.getByPeriod(currentBudgetPeriod.year, currentBudgetPeriod.month),
         savingsGoalsApi.getAll(),
         summaryApi.get()
       ]);
@@ -91,17 +122,16 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setTotalSavings(summaryData.totalSavings);
       setAvailableBalance(summaryData.availableBalance);
     } catch (err) {
-      console.error('Error fetching finance data:', err);
-      setError('Failed to load financial data');
+      handleApiError(err, 'load financial data');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentBudgetPeriod]);
 
-  // Initial data load
+  // Effect to fetch data when component mounts or period changes
   useEffect(() => {
     fetchAllData();
-  }, [fetchAllData]);
+  }, [fetchAllData, currentBudgetPeriod]);
 
   // CRUD functions for transactions
   const addTransaction = async (transaction: Omit<Transaction, 'id'>) => {
@@ -111,7 +141,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       // Refresh budgets and summary since they might have changed
       const [budgetData, summaryData] = await Promise.all([
-        budgetsApi.getAll(),
+        budgetsApi.getByPeriod(currentBudgetPeriod.year, currentBudgetPeriod.month),
         summaryApi.get()
       ]);
 
@@ -120,8 +150,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setTotalExpenses(summaryData.totalExpenses);
       setAvailableBalance(summaryData.availableBalance);
     } catch (err) {
-      console.error('Error adding transaction:', err);
-      setError('Failed to add transaction');
+      handleApiError(err, 'add transaction');
     }
   };
 
@@ -132,7 +161,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       // Refresh budgets and summary
       const [budgetData, summaryData] = await Promise.all([
-        budgetsApi.getAll(),
+        budgetsApi.getByPeriod(currentBudgetPeriod.year, currentBudgetPeriod.month),
         summaryApi.get()
       ]);
 
@@ -141,19 +170,19 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setTotalExpenses(summaryData.totalExpenses);
       setAvailableBalance(summaryData.availableBalance);
     } catch (err) {
-      console.error('Error deleting transaction:', err);
-      setError('Failed to delete transaction');
+      handleApiError(err, 'delete transaction');
     }
   };
 
   // CRUD functions for budgets
-  const addBudget = async (budget: Omit<Budget, 'id' | 'spent'>) => {
+  const addBudget = async (budget: Omit<Budget, 'id' | 'spent' | 'period'>) => {
     try {
-      const newBudget = await budgetsApi.create(budget);
+      const periodStr = `${budget.year}-${String(budget.month).padStart(2, '0')}`;
+      const budgetWithPeriod = { ...budget, period: periodStr };
+      const newBudget = await budgetsApi.create(budgetWithPeriod);
       setBudgets(prev => [...prev, newBudget]);
     } catch (err) {
-      console.error('Error adding budget:', err);
-      setError('Failed to add budget');
+      handleApiError(err, 'add budget');
     }
   };
 
@@ -164,8 +193,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
           budget.id === id ? updatedBudget : budget
       ));
     } catch (err) {
-      console.error('Error updating budget:', err);
-      setError('Failed to update budget');
+      handleApiError(err, 'update budget');
     }
   };
 
@@ -174,8 +202,29 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       await budgetsApi.delete(id);
       setBudgets(prev => prev.filter(b => b.id !== id));
     } catch (err) {
-      console.error('Error deleting budget:', err);
-      setError('Failed to delete budget');
+      handleApiError(err, 'delete budget');
+    }
+  };
+
+  // Create next month's budgets
+  const createNextMonthBudgets = async (): Promise<NextMonthBudgetsResponse> => {
+    try {
+      const result = await budgetsApi.createNextMonth();
+
+      // If we're viewing the next month already, refresh the budgets
+      const today = new Date();
+      const nextMonth = today.getMonth() + 2 > 12 ? 1 : today.getMonth() + 2;
+      const nextYear = nextMonth === 1 ? today.getFullYear() + 1 : today.getFullYear();
+
+      if (currentBudgetPeriod.month === nextMonth && currentBudgetPeriod.year === nextYear) {
+        const budgetData = await budgetsApi.getByPeriod(nextYear, nextMonth);
+        setBudgets(budgetData);
+      }
+
+      return result;
+    } catch (err) {
+      handleApiError(err, 'create next month budgets');
+      throw err as Error;
     }
   };
 
@@ -185,8 +234,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const newGoal = await savingsGoalsApi.create(goal);
       setSavingsGoals(prev => [...prev, newGoal]);
     } catch (err) {
-      console.error('Error adding savings goal:', err);
-      setError('Failed to add savings goal');
+      handleApiError(err, 'add savings goal');
     }
   };
 
@@ -210,8 +258,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setAvailableBalance(summaryData.availableBalance);
       }
     } catch (err) {
-      console.error('Error updating savings goal:', err);
-      setError('Failed to update savings goal');
+      handleApiError(err, 'update savings goal');
     }
   };
 
@@ -231,34 +278,37 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setTotalSavings(summaryData.totalSavings);
       setAvailableBalance(summaryData.availableBalance);
     } catch (err) {
-      console.error('Error deleting savings goal:', err);
-      setError('Failed to delete savings goal');
+      handleApiError(err, 'delete savings goal');
     }
   };
 
+  // Context value
+  const contextValue: FinanceContextValue = {
+    transactions,
+    budgets,
+    savingsGoals,
+    loading,
+    error,
+    currentBudgetPeriod,
+    setCurrentBudgetPeriod,
+    addTransaction,
+    addBudget,
+    updateBudget,
+    addSavingsGoal,
+    updateSavingsGoal,
+    deleteTransaction,
+    deleteBudget,
+    deleteSavingsGoal,
+    totalIncome,
+    totalExpenses,
+    totalSavings,
+    availableBalance,
+    refreshData: fetchAllData,
+    createNextMonthBudgets,
+  };
+
   return (
-      <FinanceContext.Provider
-          value={{
-            transactions,
-            budgets,
-            savingsGoals,
-            loading,
-            error,
-            addTransaction,
-            addBudget,
-            updateBudget,
-            addSavingsGoal,
-            updateSavingsGoal,
-            deleteTransaction,
-            deleteBudget,
-            deleteSavingsGoal,
-            totalIncome,
-            totalExpenses,
-            totalSavings,
-            availableBalance,
-            refreshData: fetchAllData,
-          }}
-      >
+      <FinanceContext.Provider value={contextValue}>
         {children}
       </FinanceContext.Provider>
   );
